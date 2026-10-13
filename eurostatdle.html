@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="de" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EuroStatdle - Das Länder-Ratespiel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            850: '#1f2937',
+                            900: '#111827',
+                            950: '#030712',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .guess-row {
+            animation: fadeIn 0.4s ease-out forwards;
+        }
+        .shake {
+            animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
+        }
+        @keyframes shake {
+            10%, 90% { transform: translate3d(-1px, 0, 0); }
+            20%, 80% { transform: translate3d(2px, 0, 0); }
+            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
+            40%, 60% { transform: translate3d(4px, 0, 0); }
+        }
+        
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #111827; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4B5563; }
+
+        /* Map Styles */
+        .map-country {
+            fill: #374151;
+            stroke: #1f2937;
+            stroke-width: 0.5;
+            transition: fill 0.3s ease;
+            cursor: pointer;
+        }
+        .map-country:hover {
+            fill: #4b5563;
+        }
+        .map-country.guessed-wrong {
+            fill: #ef4444 !important;
+        }
+        .map-country.guessed-correct {
+            fill: #10b981 !important;
+        }
+        .microstate {
+            stroke: #ffffff;
+            stroke-width: 1;
+            transition: fill 0.3s ease;
+            cursor: pointer;
+        }
+        
+        #map-tooltip {
+            position: absolute;
+            opacity: 0;
+            background: #111827;
+            color: #f3f4f6;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 14px;
+            pointer-events: none;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            border: 1px solid #374151;
+            transition: opacity 0.2s;
+            z-index: 50;
+        }
+
+        .toggle-checkbox:checked {
+            right: 0;
+            border-color: #3b82f6;
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            background-color: #3b82f6;
+        }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen font-sans selection:bg-blue-500 selection:text-white pb-10">
+
+    <div class="max-w-7xl mx-auto px-4 pt-8 md:pt-12">
+        <header class="text-center mb-6">
+            <h1 class="text-5xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 mb-2">EuroStatdle</h1>
+            <p class="text-gray-400 text-lg">Finde das gesuchte europäische Land! (Max. 6 Versuche)</p>
+            
+            <!-- Game Mode Selector Tabs -->
+            <div class="flex justify-center mt-4 gap-2">
+                <button id="tab-daily" class="px-5 py-2 rounded-xl font-semibold text-sm transition-all bg-blue-600 text-white shadow-lg shadow-blue-500/20">
+                    Tages-Modus (Daily)
+                </button>
+                <button id="tab-infinite" class="px-5 py-2 rounded-xl font-semibold text-sm transition-all bg-gray-800 text-gray-400 hover:text-white">
+                    Unendlich-Modus
+                </button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
+            
+            <!-- Linke Spalte: Controls & Tabelle -->
+            <div class="flex flex-col gap-6">
+                <!-- Game Controls -->
+                <div class="bg-gray-900 rounded-2xl p-6 shadow-xl border border-gray-800 relative">
+                    <div id="game-active-ui">
+                        <div class="flex justify-between items-center text-sm text-gray-400 mb-4 px-2">
+                            <span id="game-mode-indicator" class="bg-blue-500/10 text-blue-400 px-2.5 py-1 rounded-md text-xs font-semibold border border-blue-500/20">Tagesrätsel</span>
+                            <span>Versuche: <strong class="text-white" id="attempts-display">0 / 6</strong></span>
+                        </div>
+                        
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <div class="relative flex-grow">
+                                <input 
+                                    type="text" 
+                                    id="country-input" 
+                                    list="countries-list"
+                                    placeholder="Z.B. Deutschland..." 
+                                    class="w-full bg-gray-800 border border-gray-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                                    autocomplete="off"
+                                >
+                                <datalist id="countries-list"></datalist>
+                            </div>
+                            <button 
+                                id="guess-btn"
+                                class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-8 rounded-xl transition-colors shadow-lg shadow-blue-500/30 flex-shrink-0"
+                            >
+                                Raten
+                            </button>
+                        </div>
+                        <p id="error-msg" class="text-red-400 text-sm mt-2 hidden text-center font-medium"></p>
+                    </div>
+
+                    <div id="end-ui" class="hidden text-center py-4">
+                        <div id="end-icon-win" class="hidden inline-flex items-center justify-center w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400 mb-4">
+                            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                        </div>
+                        <div id="end-icon-loss" class="hidden inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-500/20 text-red-400 mb-4">
+                            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </div>
+                        <h2 id="end-title" class="text-2xl font-bold text-white mb-2"></h2>
+                        <p class="text-gray-400 mb-4" id="end-desc"></p>
+                        
+                        <!-- Countdown für den Daily Mode -->
+                        <div id="daily-countdown-box" class="hidden mb-6 p-3 bg-gray-800/50 rounded-xl border border-gray-800">
+                            <p class="text-xs text-gray-400 mb-1">Nächstes tägliches Rätsel in:</p>
+                            <span id="countdown-timer" class="text-lg font-mono font-bold text-blue-400">00:00:00</span>
+                        </div>
+
+                        <button 
+                            id="next-round-btn"
+                            class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-3 px-8 rounded-xl transition-colors shadow-lg shadow-blue-500/30"
+                        >
+                            Neue Runde spielen
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-gray-900 rounded-2xl shadow-xl border border-gray-800 overflow-hidden flex-grow">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse min-w-[600px]">
+                            <thead>
+                                <tr class="bg-gray-800/50 border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wider">
+                                    <th class="p-4 font-semibold">Land</th>
+                                    <th class="p-4 font-semibold text-center">Richtung</th>
+                                    <th class="p-4 font-semibold text-right">Einwohner</th>
+                                    <th class="p-4 font-semibold text-right">Fläche</th>
+                                    <th class="p-4 font-semibold text-right">Temp.</th>
+                                </tr>
+                            </thead>
+                            <tbody id="guesses-container" class="divide-y divide-gray-800/50 text-sm">
+                                <tr id="empty-state">
+                                    <td colspan="5" class="p-8 text-center text-gray-500 italic">
+                                        Noch keine Versuche.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Rechte Spalte: Karte -->
+            <div class="bg-gray-900 rounded-2xl p-6 shadow-xl border border-gray-800 flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="font-bold text-gray-300">Europa Karte</h3>
+                    
+                    <div class="flex items-center gap-3">
+                        <span class="text-sm font-medium text-gray-400" id="mode-label">Normal Modus</span>
+                        <div class="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in">
+                            <input type="checkbox" name="toggle" id="map-toggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer transition-all duration-300 z-10 top-0 left-0"/>
+                            <label for="map-toggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-600 cursor-pointer transition-colors duration-300"></label>
+                        </div>
+                        <span class="text-sm font-medium text-red-400 hidden" id="hard-label">Hardmodus</span>
+                    </div>
+                </div>
+
+                <div id="map-container" class="flex-grow w-full relative min-h-[400px] xl:min-h-[500px] bg-gray-800/30 rounded-xl border border-gray-800/50 overflow-hidden">
+                    <div id="map-tooltip"></div>
+                </div>
+                <div id="map-hidden-msg" class="hidden flex-grow flex items-center justify-center min-h-[400px] bg-gray-900/50 rounded-xl border border-dashed border-gray-700">
+                    <div class="text-center text-gray-500">
+                        <svg class="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
+                        <p class="font-medium">Hardmodus aktiv</p>
+                        <p class="text-sm mt-1">Karte deaktiviert</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const countriesData = [
+            { id: "ALB", name: "Albanien", pop: 2832000, area: 28748, temp: 14.8, lat: 41.15, lng: 20.16 },
+            { id: "AND", name: "Andorra", pop: 77281, area: 468, temp: 7.6, lat: 42.50, lng: 1.52, isMicro: true },
+            { id: "BEL", name: "Belgien", pop: 11590000, area: 30528, temp: 9.8, lat: 50.50, lng: 4.46 },
+            { id: "BIH", name: "Bosnien und Herzegowina", pop: 3280000, area: 51197, temp: 9.8, lat: 43.91, lng: 17.67 },
+            { id: "BGR", name: "Bulgarien", pop: 6927000, area: 110994, temp: 10.5, lat: 42.73, lng: 25.48 },
+            { id: "DNK", name: "Dänemark", pop: 5840000, area: 42933, temp: 7.5, lat: 56.26, lng: 9.50 },
+            { id: "DEU", name: "Deutschland", pop: 83200000, area: 357022, temp: 10.4, lat: 51.16, lng: 10.45 },
+            { id: "EST", name: "Estland", pop: 1330000, area: 45227, temp: 5.1, lat: 58.59, lng: 25.01 },
+            { id: "FIN", name: "Finnland", pop: 5531000, area: 338145, temp: 1.7, lat: 61.92, lng: 25.74 },
+            { id: "FRA", name: "Frankreich", pop: 67390000, area: 551695, temp: 10.7, lat: 46.22, lng: 2.21 },
+            { id: "GRC", name: "Griechenland", pop: 10720000, area: 131957, temp: 15.4, lat: 39.07, lng: 21.82 },
+            { id: "IRL", name: "Irland", pop: 4995000, area: 70273, temp: 9.3, lat: 53.41, lng: -8.24 },
+            { id: "ISL", name: "Island", pop: 366425, area: 103000, temp: 1.7, lat: 64.96, lng: -19.02 },
+            { id: "ITA", name: "Italien", pop: 59550000, area: 301340, temp: 13.4, lat: 41.87, lng: 12.56 },
+            { id: "HRV", name: "Kroatien", pop: 4047000, area: 56594, temp: 10.9, lat: 45.10, lng: 15.20 },
+            { id: "LVA", name: "Lettland", pop: 1902000, area: 64589, temp: 5.6, lat: 56.87, lng: 24.60 },
+            { id: "LIE", name: "Liechtenstein", pop: 38137, area: 160, temp: 7.4, lat: 47.16, lng: 9.55, isMicro: true },
+            { id: "LTU", name: "Litauen", pop: 2795000, area: 65300, temp: 6.2, lat: 55.16, lng: 23.88 },
+            { id: "LUX", name: "Luxemburg", pop: 626108, area: 2586, temp: 8.6, lat: 49.81, lng: 6.12 },
+            { id: "MLT", name: "Malta", pop: 514564, area: 316, temp: 19.2, lat: 35.93, lng: 14.37, isMicro: true },
+            { id: "MDA", name: "Moldau", pop: 2640000, area: 33846, temp: 9.4, lat: 47.41, lng: 28.36 },
+            { id: "MCO", name: "Monaco", pop: 39244, area: 2, temp: 16.4, lat: 43.73, lng: 7.41, isMicro: true },
+            { id: "MNE", name: "Montenegro", pop: 621718, area: 13812, temp: 10.5, lat: 42.70, lng: 19.37 },
+            { id: "NLD", name: "Niederlande", pop: 17440000, area: 41543, temp: 9.2, lat: 52.13, lng: 5.29 },
+            { id: "MKD", name: "Nordmazedonien", pop: 2083000, area: 25713, temp: 9.8, lat: 41.60, lng: 21.74 },
+            { id: "NOR", name: "Norwegen", pop: 5379000, area: 385207, temp: 1.5, lat: 60.47, lng: 8.46 },
+            { id: "AUT", name: "Österreich", pop: 8917000, area: 83871, temp: 6.3, lat: 47.51, lng: 14.55 },
+            { id: "POL", name: "Polen", pop: 37950000, area: 312696, temp: 7.8, lat: 51.91, lng: 19.14 },
+            { id: "PRT", name: "Portugal", pop: 10300000, area: 92212, temp: 15.1, lat: 39.39, lng: -8.22 },
+            { id: "ROU", name: "Rumänien", pop: 19290000, area: 238391, temp: 8.8, lat: 45.94, lng: 24.96 },
+            { id: "SMR", name: "San Marino", pop: 33938, area: 61, temp: 11.8, lat: 43.94, lng: 12.45, isMicro: true },
+            { id: "SWE", name: "Schweden", pop: 10350000, area: 450295, temp: 2.1, lat: 60.12, lng: 18.64 },
+            { id: "CHE", name: "Schweiz", pop: 8637000, area: 41285, temp: 5.5, lat: 46.81, lng: 8.22 },
+            { id: "SRB", name: "Serbien", pop: 6908000, area: 88361, temp: 10.5, lat: 44.01, lng: 21.00 },
+            { id: "SVK", name: "Slowakei", pop: 5460000, area: 49035, temp: 5.8, lat: 48.66, lng: 19.69 },
+            { id: "SVN", name: "Slowenien", pop: 2100000, area: 20273, temp: 8.9, lat: 46.15, lng: 14.99 },
+            { id: "ESP", name: "Spanien", pop: 47350000, area: 505990, temp: 13.3, lat: 40.46, lng: -3.74 },
+            { id: "CZE", name: "Tschechien", pop: 10700000, area: 78867, temp: 7.5, lat: 49.81, lng: 15.47 },
+            { id: "TUR", name: "Türkei", pop: 84340000, area: 783562, temp: 11.1, lat: 38.96, lng: 35.24 },
+            { id: "UKR", name: "Ukraine", pop: 44130000, area: 603628, temp: 8.3, lat: 48.37, lng: 31.16 },
+            { id: "HUN", name: "Ungarn", pop: 9750000, area: 93028, temp: 9.7, lat: 47.16, lng: 19.50 },
+            { id: "VAT", name: "Vatikanstadt", pop: 800, area: 0.44, temp: 15.0, lat: 41.90, lng: 12.45, isMicro: true },
+            { id: "GBR", name: "Vereinigtes Königreich", pop: 67220000, area: 242495, temp: 8.4, lat: 55.37, lng: -3.43 }
+        ];
+
+        const MAX_GUESSES = 6;
+        let currentMode = 'daily'; // 'daily' oder 'infinite'
+        let targetCountry = null;
+        let guesses = [];
+        let gameIsOver = false;
+        let isHardMode = false;
+        let countdownInterval = null;
+        
+        // DOM Elements
+        const inputEl = document.getElementById('country-input');
+        const guessBtn = document.getElementById('guess-btn');
+        const datalist = document.getElementById('countries-list');
+        const guessesContainer = document.getElementById('guesses-container');
+        const emptyState = document.getElementById('empty-state');
+        const errorMsg = document.getElementById('error-msg');
+        const attemptsDisplay = document.getElementById('attempts-display');
+        
+        const gameActiveUi = document.getElementById('game-active-ui');
+        const endUi = document.getElementById('end-ui');
+        const endTitle = document.getElementById('end-title');
+        const endDesc = document.getElementById('end-desc');
+        const iconWin = document.getElementById('end-icon-win');
+        const iconLoss = document.getElementById('end-icon-loss');
+        const nextRoundBtn = document.getElementById('next-round-btn');
+
+        const tabDaily = document.getElementById('tab-daily');
+        const tabInfinite = document.getElementById('tab-infinite');
+        const gameModeIndicator = document.getElementById('game-mode-indicator');
+        const dailyCountdownBox = document.getElementById('daily-countdown-box');
+        const countdownTimer = document.getElementById('countdown-timer');
+
+        const mapToggle = document.getElementById('map-toggle');
+        const mapContainer = document.getElementById('map-container');
+        const mapHiddenMsg = document.getElementById('map-hidden-msg');
+        const modeLabel = document.getElementById('mode-label');
+        const hardLabel = document.getElementById('hard-label');
+
+        let mapSvg, projection, pathGenerator;
+        
+        function initMap() {
+            const containerWidth = mapContainer.clientWidth || 400;
+            const containerHeight = mapContainer.clientHeight || 500;
+
+            d3.select("#map-container svg").remove();
+
+            mapSvg = d3.select("#map-container")
+                .append("svg")
+                .attr("width", "100%")
+                .attr("height", "100%")
+                .attr("viewBox", `0 0 ${containerWidth} ${containerHeight}`)
+                .style("background", "transparent");
+
+            projection = d3.geoMercator()
+                .center([15, 52])
+                .scale(containerWidth * 1.1) 
+                .translate([containerWidth / 2, containerHeight / 2]);
+
+            pathGenerator = d3.geoPath().projection(projection);
+            const tooltip = d3.select("#map-tooltip");
+
+            d3.json('https://raw.githubusercontent.com/holtzy/D3-graph-gallery/master/DATA/world.geojson').then(data => {
+                mapSvg.append("g")
+                    .selectAll("path")
+                    .data(data.features)
+                    .enter()
+                    .append("path")
+                    .attr("d", pathGenerator)
+                    .attr("id", d => "path-" + d.id)
+                    .attr("class", d => {
+                        const isInGame = countriesData.find(c => c.id === d.id);
+                        return isInGame ? "map-country" : "hidden";
+                    })
+                    .on("mouseover", function(event, d) {
+                        if(isHardMode) return;
+                        const c = countriesData.find(c => c.id === d.id);
+                        if(c) {
+                            tooltip.transition().duration(200).style("opacity", 1);
+                            tooltip.html(c.name)
+                                .style("left", (event.pageX + 10) + "px")
+                                .style("top", (event.pageY - 28) + "px");
+                        }
+                    })
+                    .on("mouseout", function() {
+                        tooltip.transition().duration(500).style("opacity", 0);
+                    })
+                    .on("click", function(event, d) {
+                        if(isHardMode || gameIsOver) return;
+                        const c = countriesData.find(c => c.id === d.id);
+                        if(c) {
+                            inputEl.value = c.name;
+                            handleGuess();
+                        }
+                    });
+
+                const microstates = countriesData.filter(c => c.isMicro);
+                mapSvg.append("g")
+                    .selectAll("circle")
+                    .data(microstates)
+                    .enter()
+                    .append("circle")
+                    .attr("id", d => "path-" + d.id)
+                    .attr("class", "map-country microstate")
+                    .attr("cx", d => projection([d.lng, d.lat])[0])
+                    .attr("cy", d => projection([d.lng, d.lat])[1])
+                    .attr("r", 5)
+                    .attr("fill", "#374151")
+                    .on("mouseover", function(event, d) {
+                        if(isHardMode) return;
+                        tooltip.transition().duration(200).style("opacity", 1);
+                        tooltip.html(d.name)
+                            .style("left", (event.pageX + 10) + "px")
+                            .style("top", (event.pageY - 28) + "px");
+                    })
+                    .on("mouseout", function() {
+                        tooltip.transition().duration(500).style("opacity", 0);
+                    })
+                    .on("click", function(event, d) {
+                        if(isHardMode || gameIsOver) return;
+                        inputEl.value = d.name;
+                        handleGuess();
+                    });
+
+                // Map-Status nach dem Laden der Karte aktualisieren (für bereits gespielten Daily Mode)
+                updateMapColors();
+            });
+        }
+
+        mapToggle.addEventListener('change', (e) => {
+            isHardMode = e.target.checked;
+            if(isHardMode) {
+                mapContainer.classList.add('hidden');
+                mapHiddenMsg.classList.remove('hidden');
+                modeLabel.classList.add('hidden');
+                hardLabel.classList.remove('hidden');
+            } else {
+                mapContainer.classList.remove('hidden');
+                mapHiddenMsg.classList.add('hidden');
+                modeLabel.classList.remove('hidden');
+                hardLabel.classList.add('hidden');
+            }
+        });
+
+        // Hilfsfunktion: Bestimmt das Tagesland anhand des UTC-Datums
+        function getDailyTargetCountry() {
+            const now = new Date();
+            // Erzeuge einen String im Format YYYY-MM-DD basierend auf UTC (englische Zeit / 00:00 UTC)
+            const utcYear = now.getUTCFullYear();
+            const utcMonth = String(now.getUTCMonth() + 1).padStart(2, '0');
+            const utcDate = String(now.getUTCDate()).padStart(2, '0');
+            const dateString = `${utcYear}-${utcMonth}-${utcDate}`;
+
+            // Einfacher Hash-Algorithmus aus dem Datums-String
+            let hash = 0;
+            for (let i = 0; i < dateString.length; i++) {
+                hash = ((hash << 5) - hash) + dateString.charCodeAt(i);
+                hash |= 0;
+            }
+            const index = Math.abs(hash) % countriesData.length;
+            return { country: countriesData[index], dateString };
+        }
+
+        // Startet den Countdown bis Mitternacht UTC
+        function startCountdown() {
+            if (countdownInterval) clearInterval(countdownInterval);
+            
+            function updateTimer() {
+                const now = new Date();
+                const utcNow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds());
+                
+                // Nächster Tag 00:00:00 UTC
+                const nextMidnightUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
+                const diff = nextMidnightUTC - utcNow;
+
+                if (diff <= 0) {
+                    countdownTimer.textContent = "00:00:00";
+                    clearInterval(countdownInterval);
+                    // Automatischer Reset bei Tageswechsel
+                    initGame();
+                    return;
+                }
+
+                const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
+                const minutes = Math.floor((diff / (1000 * 60)) % 60);
+                const seconds = Math.floor((diff / 1000) % 60);
+
+                countdownTimer.textContent = 
+                    String(hours).padStart(2, '0') + ":" + 
+                    String(minutes).padStart(2, '0') + ":" + 
+                    String(seconds).padStart(2, '0');
+            }
+
+            updateTimer();
+            countdownInterval = setInterval(updateTimer, 1000);
+        }
+
+        function initGame() {
+            gameIsOver = false;
+            d3.selectAll(".map-country").classed("guessed-wrong", false).classed("guessed-correct", false);
+
+            if (currentMode === 'daily') {
+                const daily = getDailyTargetCountry();
+                targetCountry = daily.country;
+                
+                // Lade gespeicherten Fortschritt für heute aus dem LocalStorage
+                const savedData = JSON.parse(localStorage.getItem('eurostatdle_daily_' + daily.dateString));
+                
+                if (savedData) {
+                    guesses = savedData.guesses.map(name => countriesData.find(c => c.name === name)).filter(Boolean);
+                    gameIsOver = savedData.gameIsOver;
+                } else {
+                    guesses = [];
+                    gameIsOver = false;
+                }
+            } else {
+                targetCountry = countriesData[Math.floor(Math.random() * countriesData.length)];
+                guesses = [];
+            }
+            
+            inputEl.value = '';
+            errorMsg.classList.add('hidden');
+            datalist.innerHTML = '';
+            
+            countriesData.forEach(country => {
+                const option = document.createElement('option');
+                option.value = country.name;
+                datalist.appendChild(option);
+            });
+
+            updateAttemptsDisplay();
+            renderGuesses();
+            updateMapColors();
+
+            if (gameIsOver) {
+                showEndScreen();
+            } else {
+                gameActiveUi.classList.remove('hidden');
+                endUi.classList.add('hidden');
+                inputEl.disabled = false;
+            }
+        }
+
+        function updateMapColors() {
+            if (!mapSvg) return;
+            guesses.forEach(g => {
+                if (g.id !== targetCountry.id || !gameIsOver) {
+                    d3.select("#path-" + g.id).classed("guessed-wrong", true);
+                }
+            });
+            if (gameIsOver) {
+                d3.select("#path-" + targetCountry.id).classed("guessed-correct", true);
+            }
+        }
+
+        function saveDailyProgress() {
+            if (currentMode === 'daily') {
+                const daily = getDailyTargetCountry();
+                const dataToSave = {
+                    guesses: guesses.map(g => g.name),
+                    gameIsOver: gameIsOver
+                };
+                localStorage.setItem('eurostatdle_daily_' + daily.dateString, JSON.stringify(dataToSave));
+            }
+        }
+
+        function getDirection(lat1, lon1, lat2, lon2) {
+            let dLon = (lon2 - lon1) * Math.PI / 180;
+            lat1 = lat1 * Math.PI / 180;
+            lat2 = lat2 * Math.PI / 180;
+            
+            let y = Math.sin(dLon) * Math.cos(lat2);
+            let x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+            let brng = Math.atan2(y, x) * 180 / Math.PI;
+            brng = (brng + 360) % 360;
+            
+            const compass = ["N", "NO", "O", "SO", "S", "SW", "W", "NW"];
+            const index = Math.round(brng / 45) % 8;
+            if (lat1 === lat2 && lon1 === lon2) return "✓";
+            return compass[index];
+        }
+
+        function getDirectionArrow(direction) {
+            const arrows = {
+                "N": "⬆️", "NO": "↗️", "O": "➡️", "SO": "↘️",
+                "S": "⬇️", "SW": "↙️", "W": "⬅️", "NW": "↖️", "✓": "🎯"
+            };
+            return arrows[direction] || "";
+        }
+
+        function formatNumber(num) {
+            return new Intl.NumberFormat('de-DE').format(num);
+        }
+
+        function getFeedback(guessValue, targetValue) {
+            if (guessValue === targetValue) {
+                return { icon: '✓', color: 'text-emerald-400', bg: 'bg-emerald-400/10 border-emerald-400/20' };
+            } else if (targetValue > guessValue) {
+                return { icon: '↑', color: 'text-blue-400', bg: 'bg-blue-400/10 border-blue-400/20' }; 
+            } else {
+                return { icon: '↓', color: 'text-orange-400', bg: 'bg-orange-400/10 border-orange-400/20' }; 
+            }
+        }
+
+        function handleGuess() {
+            if (gameIsOver) return;
+
+            const inputValue = inputEl.value.trim();
+            if (!inputValue) return;
+
+            const guessedCountry = countriesData.find(c => c.name.toLowerCase() === inputValue.toLowerCase());
+
+            if (!guessedCountry) {
+                showError("Land nicht gefunden oder außerhalb Europas.");
+                return;
+            }
+
+            if (guesses.some(g => g.name === guessedCountry.name)) {
+                showError("Land wurde schon geraten.");
+                inputEl.value = '';
+                return; 
+            }
+
+            errorMsg.classList.add('hidden');
+            guesses.unshift(guessedCountry);
+            inputEl.value = '';
+            
+            updateAttemptsDisplay();
+            renderGuesses();
+            
+            if (guessedCountry.id !== targetCountry.id) {
+                d3.select("#path-" + guessedCountry.id).classed("guessed-wrong", true);
+            }
+
+            checkGameEnd(guessedCountry);
+            saveDailyProgress();
+        }
+
+        function showError(msg) {
+            errorMsg.textContent = msg;
+            errorMsg.classList.remove('hidden');
+            inputEl.classList.add('shake');
+            setTimeout(() => inputEl.classList.remove('shake'), 500);
+        }
+
+        function updateAttemptsDisplay() {
+            attemptsDisplay.textContent = `${guesses.length} / ${MAX_GUESSES}`;
+        }
+
+        function renderGuesses() {
+            if (guesses.length === 0) {
+                guessesContainer.innerHTML = '';
+                guessesContainer.appendChild(emptyState);
+                return;
+            }
+
+            guessesContainer.innerHTML = '';
+
+            guesses.forEach(guess => {
+                const popFeedback = getFeedback(guess.pop, targetCountry.pop);
+                const areaFeedback = getFeedback(guess.area, targetCountry.area);
+                const tempFeedback = getFeedback(guess.temp, targetCountry.temp);
+                
+                const compassDir = getDirection(guess.lat, guess.lng, targetCountry.lat, targetCountry.lng);
+                const arrowDir = getDirectionArrow(compassDir);
+
+                const isCorrect = guess.name === targetCountry.name;
+                const nameStyle = isCorrect ? 'text-emerald-400 font-bold' : 'text-gray-200';
+                const dirBg = isCorrect ? 'bg-emerald-400/10 border-emerald-400/20 text-emerald-400' : 'bg-gray-800 border-gray-700 text-gray-300';
+
+                const tr = document.createElement('tr');
+                tr.className = 'guess-row hover:bg-gray-800/30 transition-colors';
+                
+                tr.innerHTML = `
+                    <td class="p-3 sm:p-4 whitespace-nowrap ${nameStyle}">${guess.name}</td>
+                    <td class="p-3 sm:p-4 text-center">
+                        <div class="inline-flex items-center justify-center gap-1 border px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg ${dirBg} font-mono w-16">
+                            <span>${arrowDir}</span> <span class="text-xs ml-1">${compassDir !== '✓' ? compassDir : ''}</span>
+                        </div>
+                    </td>
+                    <td class="p-3 sm:p-4 text-right">
+                        <div class="inline-flex items-center justify-end gap-2 border px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg ${popFeedback.bg}">
+                            <span class="text-gray-300 font-mono text-xs sm:text-sm">${formatNumber(guess.pop)}</span>
+                            <span class="font-bold text-sm sm:text-lg w-4 sm:w-5 text-center ${popFeedback.color}">${popFeedback.icon}</span>
+                        </div>
+                    </td>
+                    <td class="p-3 sm:p-4 text-right">
+                        <div class="inline-flex items-center justify-end gap-2 border px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg ${areaFeedback.bg}">
+                            <span class="text-gray-300 font-mono text-xs sm:text-sm">${formatNumber(guess.area)}</span>
+                            <span class="font-bold text-sm sm:text-lg w-4 sm:w-5 text-center ${areaFeedback.color}">${areaFeedback.icon}</span>
+                        </div>
+                    </td>
+                    <td class="p-3 sm:p-4 text-right">
+                        <div class="inline-flex items-center justify-end gap-2 border px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg ${tempFeedback.bg}">
+                            <span class="text-gray-300 font-mono text-xs sm:text-sm">${guess.temp}°C</span>
+                            <span class="font-bold text-sm sm:text-lg w-4 sm:w-5 text-center ${tempFeedback.color}">${tempFeedback.icon}</span>
+                        </div>
+                    </td>
+                `;
+                guessesContainer.appendChild(tr);
+            });
+        }
+
+        function checkGameEnd(guessedCountry) {
+            const isWin = guessedCountry.name === targetCountry.name;
+            const isLoss = guesses.length >= MAX_GUESSES && !isWin;
+
+            if (isWin || isLoss) {
+                gameIsOver = true;
+                inputEl.disabled = true;
+                d3.select("#path-" + targetCountry.id).classed("guessed-correct", true);
+                
+                setTimeout(() => {
+                    showEndScreen();
+                }, 500);
+            } else {
+                inputEl.focus();
+            }
+        }
+
+        function showEndScreen() {
+            gameActiveUi.classList.add('hidden');
+            endUi.classList.remove('hidden');
+
+            const isWin = guesses.some(g => g.name === targetCountry.name);
+
+            if(isWin) {
+                iconWin.classList.remove('hidden');
+                iconLoss.classList.add('hidden');
+                endTitle.textContent = "Richtig geraten!";
+                endTitle.className = "text-2xl font-bold text-emerald-400 mb-2";
+                endDesc.textContent = `Du hast ${targetCountry.name} in ${guesses.length} Versuchen gefunden.`;
+            } else {
+                iconWin.classList.add('hidden');
+                iconLoss.classList.remove('hidden');
+                endTitle.textContent = "Game Over!";
+                endTitle.className = "text-2xl font-bold text-red-400 mb-2";
+                endDesc.innerHTML = `Das gesuchte Land war <strong>${targetCountry.name}</strong>.`;
+            }
+
+            if (currentMode === 'daily') {
+                dailyCountdownBox.classList.remove('hidden');
+                nextRoundBtn.classList.add('hidden');
+                startCountdown();
+            } else {
+                dailyCountdownBox.classList.add('hidden');
+                nextRoundBtn.classList.remove('hidden');
+            }
+        }
+
+        // Tab Switching
+        tabDaily.addEventListener('click', () => {
+            currentMode = 'daily';
+            tabDaily.className = "px-5 py-2 rounded-xl font-semibold text-sm transition-all bg-blue-600 text-white shadow-lg shadow-blue-500/20";
+            tabInfinite.className = "px-5 py-2 rounded-xl font-semibold text-sm transition-all bg-gray-800 text-gray-400 hover:text-white";
+            gameModeIndicator.textContent = "Tagesrätsel";
+            initGame();
+        });
+
+        tabInfinite.addEventListener('click', () => {
+            currentMode = 'infinite';
+            tabInfinite.className = "px-5 py-2 rounded-xl font-semibold text-sm transition-all bg-blue-600 text-white shadow-lg shadow-blue-500/20";
+            tabDaily.className = "px-5 py-2 rounded-xl font-semibold text-sm transition-all bg-gray-800 text-gray-400 hover:text-white";
+            gameModeIndicator.textContent = "Unendlich-Modus";
+            initGame();
+        });
+
+        guessBtn.addEventListener('click', handleGuess);
+        inputEl.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleGuess(); });
+        inputEl.addEventListener('input', () => errorMsg.classList.add('hidden'));
+
+        nextRoundBtn.addEventListener('click', () => {
+            initGame();
+            inputEl.focus();
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initMap();
+            initGame();
+        });
+    </script>
+</body>
+</html>
